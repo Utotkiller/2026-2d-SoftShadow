@@ -1,4 +1,3 @@
-import { rgba } from '../math/color.js';
 import { clamp } from '../math/Vec2.js';
 import { SoftShadowRenderer } from './SoftShadowRenderer.js';
 
@@ -30,46 +29,28 @@ export class SceneRenderer {
     context.clearRect(0, 0, this.width, this.height);
 
     this.drawBase(context);
-    this.drawCharacterLight(context, scene);
+    this.shadowRenderer.drawLight(context, scene);
     this.drawOccluders(context, scene);
-    this.shadowRenderer.draw(context, scene);
     this.drawCharacter(context, scene);
-    this.drawReadout(context, scene);
+    this.shadowRenderer.drawRays(context, scene);
   }
 
   drawBase(context) {
-    context.fillStyle = '#06070a';
+    context.fillStyle = 'rgb(0, 0, 0)';
     context.fillRect(0, 0, this.width, this.height);
-  }
-
-  drawCharacterLight(context, scene) {
-    const light = scene.character.position;
-    const radius = scene.characterLight.radius;
-    const gradient = context.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
-
-    gradient.addColorStop(0, rgba(255, 246, 218, 0.82 * scene.characterLight.intensity));
-    gradient.addColorStop(0.22, rgba(255, 244, 220, 0.36 * scene.characterLight.intensity));
-    gradient.addColorStop(0.64, rgba(255, 244, 220, 0.09 * scene.characterLight.intensity));
-    gradient.addColorStop(1, rgba(255, 255, 255, 0));
-
-    context.save();
-    context.globalCompositeOperation = 'lighter';
-    context.fillStyle = gradient;
-    context.fillRect(light.x - radius, light.y - radius, radius * 2, radius * 2);
-    context.restore();
   }
 
   drawOccluders(context, scene) {
     for (const box of scene.occluders) {
-      const lightDistance = Math.hypot(box.position.x - scene.character.position.x, box.position.y - scene.character.position.y);
-      const lightAmount = clamp(1 - lightDistance / scene.characterLight.radius, 0, 1);
-      const shade = Math.round(54 + 190 * lightAmount * lightAmount);
-      const edge = Math.round(82 + 150 * lightAmount);
+      const lightAmount = clamp(this.shadowRenderer.getBoxLightAmount(scene, box), 0, 1);
+      const shade = Math.round(22 + 218 * lightAmount);
+      const innerShade = Math.round(38 + 217 * lightAmount);
+      const edge = Math.round(54 + 175 * lightAmount);
 
       context.fillStyle = `rgb(${shade}, ${shade}, ${shade})`;
       context.fillRect(box.left, box.top, box.size, box.size);
 
-      context.fillStyle = `rgba(255, 255, 255, ${0.08 + lightAmount * 0.20})`;
+      context.fillStyle = `rgb(${innerShade}, ${innerShade}, ${innerShade})`;
       context.fillRect(box.left + 3, box.top + 3, box.size - 6, box.size - 6);
 
       context.strokeStyle = `rgb(${edge}, ${edge}, ${edge})`;
@@ -104,15 +85,6 @@ export class SceneRenderer {
     context.arc(0, 0, radius * 0.48, 0, Math.PI * 2);
     context.fill();
 
-    context.restore();
-  }
-
-  drawReadout(context, scene) {
-    context.save();
-    context.font = '12px ui-monospace, SFMono-Regular, Consolas, monospace';
-    context.fillStyle = 'rgba(255, 255, 255, 0.72)';
-    context.textBaseline = 'top';
-    context.fillText(`softness ${scene.shadowSoftness.toFixed(1)} | radius ${Math.round(scene.characterLight.radius)} | boxes push | debug ${scene.debug ? 'on' : 'off'}`, 16, 16);
     context.restore();
   }
 }
