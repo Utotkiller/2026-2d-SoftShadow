@@ -1,63 +1,79 @@
-import { Vec2, clamp, normalizeAngle } from '../math/Vec2.js';
+import { Vec2, clamp } from '../math/Vec2.js';
+import { rgba } from '../math/color.js';
 
 const TAU = Math.PI * 2;
 const EPSILON = 1e-7;
+const CORNER_EPSILON = 0.0008;
+const BASE_RAY_COUNT = 160;
 
-function polygon(context, points) {
-  if (points.length < 3) return;
-
-  context.beginPath();
-  context.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i += 1) {
-    context.lineTo(points[i].x, points[i].y);
-  }
-  context.closePath();
-  context.fill();
+function addSegment(segments, a, b, owner = null) {
+  segments.push({ a, b, owner });
 }
 
-function projectPoint(point, lightPosition, distance) {
-  const direction = Vec2.subtract(point, lightPosition);
-  const length = direction.length();
+function createSegments(scene) {
+  const segments = [];
+  const inset = 0.5;
+  const topLeft = new Vec2(inset, inset);
+  const topRight = new Vec2(scene.width - inset, inset);
+  const bottomRight = new Vec2(scene.width - inset, scene.height - inset);
+  const bottomLeft = new Vec2(inset, scene.height - inset);
 
-  if (length <= EPSILON) return point.clone();
+  addSegment(segments, topLeft, topRight);
+  addSegment(segments, topRight, bottomRight);
+  addSegment(segments, bottomRight, bottomLeft);
+  addSegment(segments, bottomLeft, topLeft);
 
-  direction.multiplyScalar(1 / length);
-  return Vec2.add(point, Vec2.multiplyScalar(direction, distance));
-}
-
-function angleFromLight(point, lightPosition) {
-  return normalizeAngle(Math.atan2(point.y - lightPosition.y, point.x - lightPosition.x));
-}
-
-function getAngularSpan(points, lightPosition) {
-  const entries = points
-    .map((point) => ({ point, angle: angleFromLight(point, lightPosition) }))
-    .sort((a, b) => a.angle - b.angle);
-
-  let largestGap = -Infinity;
-  let gapIndex = 0;
-
-  for (let i = 0; i < entries.length; i += 1) {
-    const current = entries[i].angle;
-    const next = entries[(i + 1) % entries.length].angle + (i === entries.length - 1 ? TAU : 0);
-    const gap = next - current;
-
-    if (gap > largestGap) {
-      largestGap = gap;
-      gapIndex = i;
-    }
+  for (const box of scene.occluders) {
+    const corners = box.corners();
+    addSegment(segments, corners[0], corners[1], box);
+    addSegment(segments, corners[1], corners[2], box);
+    addSegment(segments, corners[2], corners[3], box);
+    addSegment(segments, corners[3], corners[0], box);
   }
 
-  const startIndex = (gapIndex + 1) % entries.length;
-  const endIndex = gapIndex;
-  const span = TAU - largestGap;
+  return segments;
+}
 
-  if (span <= 0 || span > Math.PI * 1.3) return null;
+function cross(ax, ay, bx, by) {
+  return ax * by - ay * bx;
+}
+
+function raySegmentDistance(origin, angle, segment, maxDistance) {
+  const rayX = Math.cos(angle);
+  const rayY = Math.sin(angle);
+  const segX = segment.b.x - segment.a.x;
+  const segY = segment.b.y - segment.a.y;
+  const denominator = cross(rayX, rayY, segX, segY);
+
+  if (Math.abs(denominator) <= EPSILON) return null;
+
+  const originToSegmentX = segment.a.x - origin.x;
+  const originToSegmentY = segment.a.y - origin.y;
+  const rayDistance = cross(originToSegmentX, originToSegmentY, segX, segY) / denominator;
+  const segmentRatio = cross(originToSegmentX, originToSegmentY, rayX, rayY) / denominator;
+
+  if (rayDistance < 0 || rayDistance > maxDistance || segmentRatio < 0 || segmentRatio > 1) return null;
+
+  return rayDistance;
+}
+
+function castRay(origin, angle, segments, maxDistance) {
+  let nearestDistance = maxDistance;
+  let hitOwner = null;
+
+  for (const segment of segments) {
+    const distance = raySegmentDistance(origin, angle, segment, maxDistance);
+    if (distance === null || distance >= nearestDistance) continue;
+
+    nearestDistance = distance;
+    hitOwner = segment.owner;
+  }
 
   return {
-    start: entries[startIndex],
-    end: entries[endIndex],
-    span
+    angle,
+    point: Vec2.add(origin, Vec2.fromAngle(angle, nearestDistance)),
+    distance: nearestDistance,
+    owner: hitOwner
   };
 }
 
@@ -97,119 +113,141 @@ function rayBoxDistance(origin, target, box) {
   return Math.max(0, tMin);
 }
 
-function sampleVisibleFromLight(sample, caster, occluders, lightPosition) {
-  const sampleDistance = Vec2.distance(lightPosition, sample);
+function drawPolygonPath(context, points) {
+  if (points.length < 3) return;
 
-  for (const other of occluders) {
-    if (other === caster) continue;
-
-    const hitDistance = rayBoxDistance(lightPosition, sample, other);
-    if (hitDistance !== null && hitDistance < sampleDistance - 0.75) {
-      return false;
-    }
+  context.beginPath();
+  context.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) {
+    context.lineTo(points[i].x, points[i].y);
   }
-
-  return true;
-}
-
-function casterReceivesLight(caster, occluders, lightPosition, lightRadius) {
-  const centerDistance = Vec2.distance(lightPosition, caster.position);
-  if (centerDistance > lightRadius + caster.size * 1.5) return false;
-
-  const samples = [caster.position, ...caster.corners()];
-  return samples.some((sample) => sampleVisibleFromLight(sample, caster, occluders, lightPosition));
+  context.closePath();
 }
 
 export class SoftShadowRenderer {
   constructor() {
-    this.penumbraLayers = 12;
-    this.umbraAlpha = 0.56;
-    this.penumbraAlpha = 0.18;
+    this.lightCanvas = document.createElement('canvas');
+    this.lightContext = this.lightCanvas.getContext('2d', { alpha: true });
+    this.visibilityPolygon = [];
+    this.rays = [];
   }
 
-  draw(context, scene) {
-    const lightPosition = scene.character.position;
-    const shadowDistance = Math.hypot(scene.width, scene.height) * 1.45;
+  drawLight(context, scene) {
+    const polygon = this.buildVisibilityPolygon(scene);
+    if (polygon.length < 3) return;
+
+    this.ensureLightCanvas(scene.width, scene.height);
+    const lightContext = this.lightContext;
+    lightContext.setTransform(1, 0, 0, 1, 0, 0);
+    lightContext.clearRect(0, 0, scene.width, scene.height);
+
+    const light = scene.character.position;
+    const radius = scene.characterLight.radius;
+    const gradient = lightContext.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
+    gradient.addColorStop(0, rgba(255, 246, 218, 0.90 * scene.characterLight.intensity));
+    gradient.addColorStop(0.22, rgba(255, 244, 220, 0.42 * scene.characterLight.intensity));
+    gradient.addColorStop(0.64, rgba(255, 244, 220, 0.10 * scene.characterLight.intensity));
+    gradient.addColorStop(1, rgba(255, 255, 255, 0));
+
+    lightContext.save();
+    drawPolygonPath(lightContext, polygon);
+    lightContext.clip();
+    lightContext.fillStyle = gradient;
+    lightContext.fillRect(light.x - radius, light.y - radius, radius * 2, radius * 2);
+    lightContext.restore();
 
     context.save();
+    context.globalCompositeOperation = 'lighter';
+    context.filter = 'blur(3px)';
+    context.drawImage(this.lightCanvas, 0, 0, scene.width, scene.height);
+    context.filter = 'none';
+    context.drawImage(this.lightCanvas, 0, 0, scene.width, scene.height);
+    context.restore();
+  }
+
+  drawRays(context, scene) {
+    if (!scene.showRays || this.rays.length === 0) return;
+
+    const light = scene.character.position;
+    context.save();
     context.globalCompositeOperation = 'source-over';
+    context.strokeStyle = 'rgba(255, 235, 170, 0.32)';
+    context.lineWidth = 1;
 
-    for (const caster of scene.occluders) {
-      if (caster.contains(lightPosition)) continue;
-      if (!casterReceivesLight(caster, scene.occluders, lightPosition, scene.characterLight.radius)) continue;
+    const stride = Math.max(1, Math.floor(this.rays.length / 80));
+    for (let i = 0; i < this.rays.length; i += stride) {
+      const ray = this.rays[i];
+      context.beginPath();
+      context.moveTo(light.x, light.y);
+      context.lineTo(ray.point.x, ray.point.y);
+      context.stroke();
+    }
 
-      const corners = caster.corners();
-      const span = getAngularSpan(corners, lightPosition);
-      if (!span) continue;
+    context.restore();
+  }
 
-      const distance = Vec2.distance(lightPosition, caster.position);
-      const lightFade = clamp(1 - distance / scene.characterLight.radius, 0, 1);
-      if (lightFade <= 0.02) continue;
+  getBoxLightAmount(scene, box) {
+    const light = scene.character.position;
+    const samples = [box.position, ...box.corners()];
+    let visible = 0;
 
-      const startPoint = span.start.point;
-      const endPoint = span.end.point;
-      const startFar = projectPoint(startPoint, lightPosition, shadowDistance);
-      const endFar = projectPoint(endPoint, lightPosition, shadowDistance);
-
-      context.fillStyle = `rgba(0, 0, 0, ${this.umbraAlpha * lightFade})`;
-      polygon(context, [startPoint, endPoint, endFar, startFar]);
-
-      const spread = this.computeSpread(scene, distance, span.span);
-      this.drawPenumbra(context, lightPosition, startPoint, span.start.angle, -1, shadowDistance, spread, lightFade);
-      this.drawPenumbra(context, lightPosition, endPoint, span.end.angle, 1, shadowDistance, spread, lightFade);
-
-      if (scene.debug) {
-        this.drawDebug(context, lightPosition, startPoint, endPoint, startFar, endFar);
+    for (const sample of samples) {
+      if (this.isPointVisible(light, sample, scene.occluders, box)) {
+        visible += 1;
       }
     }
 
-    context.restore();
+    const visibility = visible / samples.length;
+    const distance = Vec2.distance(light, box.position);
+    const distanceFade = clamp(1 - distance / scene.characterLight.radius, 0, 1);
+    return visibility * distanceFade;
   }
 
-  computeSpread(scene, casterDistance, angularSpan) {
-    const radiusTerm = scene.character.radius / Math.max(casterDistance, 1);
-    const edgeTerm = angularSpan * 0.24;
-    return clamp((radiusTerm + edgeTerm) * scene.shadowSoftness, 0.03, 0.38);
-  }
+  buildVisibilityPolygon(scene) {
+    const light = scene.character.position;
+    const radius = scene.characterLight.radius;
+    const segments = createSegments(scene);
+    const angles = [];
 
-  drawPenumbra(context, lightPosition, originPoint, baseAngle, sign, shadowDistance, spread, lightFade) {
-    const originDistance = Vec2.distance(lightPosition, originPoint);
-    const farDistance = originDistance + shadowDistance;
-
-    for (let i = 0; i < this.penumbraLayers; i += 1) {
-      const t0 = i / this.penumbraLayers;
-      const t1 = (i + 1) / this.penumbraLayers;
-      const angle0 = baseAngle + sign * spread * t0;
-      const angle1 = baseAngle + sign * spread * t1;
-      const far0 = Vec2.add(lightPosition, Vec2.fromAngle(angle0, farDistance));
-      const far1 = Vec2.add(lightPosition, Vec2.fromAngle(angle1, farDistance));
-      const falloff = Math.pow(1 - t0, 1.85);
-
-      context.fillStyle = `rgba(0, 0, 0, ${this.penumbraAlpha * falloff * lightFade})`;
-      polygon(context, [originPoint, far0, far1]);
+    for (let i = 0; i < BASE_RAY_COUNT; i += 1) {
+      angles.push((i / BASE_RAY_COUNT) * TAU);
     }
+
+    for (const segment of segments) {
+      const points = [segment.a, segment.b];
+      for (const point of points) {
+        const angle = Math.atan2(point.y - light.y, point.x - light.x);
+        angles.push(angle - CORNER_EPSILON, angle, angle + CORNER_EPSILON);
+      }
+    }
+
+    const rays = angles.map((angle) => castRay(light, angle, segments, radius));
+    rays.sort((a, b) => a.angle - b.angle);
+
+    this.rays = rays;
+    this.visibilityPolygon = rays.map((ray) => ray.point);
+    return this.visibilityPolygon;
   }
 
-  drawDebug(context, lightPosition, startPoint, endPoint, startFar, endFar) {
-    context.save();
-    context.strokeStyle = 'rgba(255, 255, 255, 0.52)';
-    context.lineWidth = 1;
-    context.setLineDash([4, 5]);
-    context.beginPath();
-    context.moveTo(lightPosition.x, lightPosition.y);
-    context.lineTo(startPoint.x, startPoint.y);
-    context.moveTo(lightPosition.x, lightPosition.y);
-    context.lineTo(endPoint.x, endPoint.y);
-    context.stroke();
+  isPointVisible(light, point, boxes, ignoredBox = null) {
+    const pointDistance = Vec2.distance(light, point);
 
-    context.setLineDash([]);
-    context.strokeStyle = 'rgba(120, 220, 255, 0.45)';
-    context.beginPath();
-    context.moveTo(startPoint.x, startPoint.y);
-    context.lineTo(startFar.x, startFar.y);
-    context.moveTo(endPoint.x, endPoint.y);
-    context.lineTo(endFar.x, endFar.y);
-    context.stroke();
-    context.restore();
+    for (const box of boxes) {
+      if (box === ignoredBox) continue;
+
+      const hitDistance = rayBoxDistance(light, point, box);
+      if (hitDistance !== null && hitDistance < pointDistance - 0.75) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  ensureLightCanvas(width, height) {
+    if (this.lightCanvas.width === width && this.lightCanvas.height === height) return;
+
+    this.lightCanvas.width = width;
+    this.lightCanvas.height = height;
   }
 }
