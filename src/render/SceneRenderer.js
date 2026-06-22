@@ -1,5 +1,5 @@
 import { rgba } from '../math/color.js';
-import { CenterColorField } from './CenterColorField.js';
+import { clamp } from '../math/Vec2.js';
 import { SoftShadowRenderer } from './SoftShadowRenderer.js';
 
 export class SceneRenderer {
@@ -9,11 +9,10 @@ export class SceneRenderer {
     this.dpr = 1;
     this.width = 1;
     this.height = 1;
-    this.centerColorField = new CenterColorField();
     this.shadowRenderer = new SoftShadowRenderer();
   }
 
-  resize(width, height, scene) {
+  resize(width, height) {
     this.dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
     this.width = Math.max(1, Math.floor(width));
     this.height = Math.max(1, Math.floor(height));
@@ -23,38 +22,23 @@ export class SceneRenderer {
     this.canvas.style.width = `${this.width}px`;
     this.canvas.style.height = `${this.height}px`;
     this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    this.centerColorField.rebuild(this.width, this.height, scene.centerField);
   }
 
-  draw(scene, input) {
+  draw(scene) {
     const context = this.context;
     context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     context.clearRect(0, 0, this.width, this.height);
 
     this.drawBase(context);
-    this.centerColorField.draw(context, this.width, this.height);
     this.drawCharacterLight(context, scene);
-    this.shadowRenderer.draw(context, scene);
     this.drawOccluders(context, scene);
-    this.drawCharacter(context, scene, input);
+    this.shadowRenderer.draw(context, scene);
+    this.drawCharacter(context, scene);
     this.drawReadout(context, scene);
   }
 
   drawBase(context) {
-    const gradient = context.createRadialGradient(
-      this.width * 0.5,
-      this.height * 0.5,
-      20,
-      this.width * 0.5,
-      this.height * 0.5,
-      Math.max(this.width, this.height) * 0.8
-    );
-
-    gradient.addColorStop(0, '#222536');
-    gradient.addColorStop(0.45, '#151720');
-    gradient.addColorStop(1, '#0e0f13');
-
-    context.fillStyle = gradient;
+    context.fillStyle = '#06070a';
     context.fillRect(0, 0, this.width, this.height);
   }
 
@@ -63,9 +47,9 @@ export class SceneRenderer {
     const radius = scene.characterLight.radius;
     const gradient = context.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
 
-    gradient.addColorStop(0, rgba(255, 245, 221, 0.64 * scene.characterLight.intensity));
-    gradient.addColorStop(0.24, rgba(255, 228, 190, 0.26 * scene.characterLight.intensity));
-    gradient.addColorStop(0.58, rgba(166, 190, 255, 0.08 * scene.characterLight.intensity));
+    gradient.addColorStop(0, rgba(255, 246, 218, 0.82 * scene.characterLight.intensity));
+    gradient.addColorStop(0.22, rgba(255, 244, 220, 0.36 * scene.characterLight.intensity));
+    gradient.addColorStop(0.64, rgba(255, 244, 220, 0.09 * scene.characterLight.intensity));
     gradient.addColorStop(1, rgba(255, 255, 255, 0));
 
     context.save();
@@ -76,89 +60,59 @@ export class SceneRenderer {
   }
 
   drawOccluders(context, scene) {
-    for (const occluder of scene.occluders) {
-      const left = occluder.left;
-      const top = occluder.top;
-      const size = occluder.size;
-      const centerX = occluder.position.x;
-      const centerY = occluder.position.y;
+    for (const box of scene.occluders) {
+      const lightDistance = Math.hypot(box.position.x - scene.character.position.x, box.position.y - scene.character.position.y);
+      const lightAmount = clamp(1 - lightDistance / scene.characterLight.radius, 0, 1);
+      const shade = Math.round(54 + 190 * lightAmount * lightAmount);
+      const edge = Math.round(82 + 150 * lightAmount);
 
-      context.save();
-      context.shadowBlur = size * 0.38;
-      context.shadowColor = 'rgba(255, 255, 255, 0.52)';
-      context.fillStyle = 'rgba(255, 255, 255, 0.95)';
-      context.fillRect(left, top, size, size);
-      context.restore();
+      context.fillStyle = `rgb(${shade}, ${shade}, ${shade})`;
+      context.fillRect(box.left, box.top, box.size, box.size);
 
-      const gradient = context.createRadialGradient(centerX, centerY, size * 0.10, centerX, centerY, size * 0.72);
-      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-      gradient.addColorStop(0.55, 'rgba(255, 255, 255, 0.94)');
-      gradient.addColorStop(1, 'rgba(210, 214, 232, 0.76)');
-      context.fillStyle = gradient;
-      context.fillRect(left, top, size, size);
+      context.fillStyle = `rgba(255, 255, 255, ${0.08 + lightAmount * 0.20})`;
+      context.fillRect(box.left + 3, box.top + 3, box.size - 6, box.size - 6);
 
-      context.strokeStyle = 'rgba(255, 255, 255, 0.32)';
+      context.strokeStyle = `rgb(${edge}, ${edge}, ${edge})`;
       context.lineWidth = 1;
-      context.strokeRect(left + 0.5, top + 0.5, size - 1, size - 1);
+      context.strokeRect(box.left + 0.5, box.top + 0.5, box.size - 1, box.size - 1);
     }
   }
 
-  drawCharacter(context, scene, input) {
+  drawCharacter(context, scene) {
     const character = scene.character;
     const radius = character.radius;
 
     context.save();
     context.translate(character.position.x, character.position.y);
-    context.rotate(character.angle + Math.PI * 0.5);
 
-    context.shadowBlur = 18;
-    context.shadowColor = 'rgba(255, 232, 180, 0.42)';
-
-    context.fillStyle = 'rgba(20, 23, 24, 0.96)';
+    context.shadowBlur = 22;
+    context.shadowColor = 'rgba(255, 239, 190, 0.55)';
+    context.fillStyle = 'rgba(18, 21, 24, 1)';
     context.beginPath();
-    context.ellipse(0, 0, radius * 0.82, radius * 1.08, 0, 0, Math.PI * 2);
+    context.arc(0, 0, radius, 0, Math.PI * 2);
     context.fill();
 
     context.shadowBlur = 0;
-    context.strokeStyle = 'rgba(214, 218, 205, 0.88)';
+    context.strokeStyle = 'rgba(255, 250, 230, 0.92)';
     context.lineWidth = Math.max(2, radius * 0.16);
     context.beginPath();
-    context.arc(0, 0, radius * 0.7, -Math.PI * 0.92, Math.PI * 0.24);
+    context.arc(0, 0, radius - context.lineWidth * 0.5, 0, Math.PI * 2);
     context.stroke();
 
-    context.fillStyle = 'rgba(88, 82, 67, 0.96)';
+    context.fillStyle = 'rgba(255, 238, 186, 0.22)';
     context.beginPath();
-    context.ellipse(-radius * 0.16, radius * 0.14, radius * 0.5, radius * 0.62, 0.26, 0, Math.PI * 2);
+    context.arc(0, 0, radius * 0.48, 0, Math.PI * 2);
     context.fill();
 
-    context.strokeStyle = 'rgba(12, 13, 15, 1)';
-    context.lineWidth = Math.max(3, radius * 0.18);
-    context.lineCap = 'round';
-    context.beginPath();
-    context.moveTo(radius * 0.1, -radius * 0.32);
-    context.lineTo(radius * 0.25, -radius * 1.25);
-    context.stroke();
-
     context.restore();
-
-    if (input.pointerInside) {
-      context.save();
-      context.strokeStyle = 'rgba(255, 255, 255, 0.16)';
-      context.lineWidth = 1;
-      context.beginPath();
-      context.moveTo(character.position.x, character.position.y);
-      context.lineTo(input.pointer.x, input.pointer.y);
-      context.stroke();
-      context.restore();
-    }
   }
 
   drawReadout(context, scene) {
     context.save();
     context.font = '12px ui-monospace, SFMono-Regular, Consolas, monospace';
-    context.fillStyle = 'rgba(255, 255, 255, 0.65)';
+    context.fillStyle = 'rgba(255, 255, 255, 0.72)';
     context.textBaseline = 'top';
-    context.fillText(`softness ${scene.shadowSoftness.toFixed(1)} | radius ${Math.round(scene.characterLight.radius)} | debug ${scene.debug ? 'on' : 'off'}`, 16, 16);
+    context.fillText(`softness ${scene.shadowSoftness.toFixed(1)} | radius ${Math.round(scene.characterLight.radius)} | boxes push | debug ${scene.debug ? 'on' : 'off'}`, 16, 16);
     context.restore();
   }
 }
