@@ -59,7 +59,7 @@ src/
     color.js            RGB/RGBA utilities
   render/
     SceneRenderer.js    main canvas draw pipeline
-    SoftShadowRenderer.js projected umra + penumbra geometry and occlusion checks
+    SoftShadowRenderer.js projected umbra + penumbra geometry and occlusion checks
   world/
     Occluder.js         pushable rectangle blocker state
     Scene.js            character, boxes, collision, controls
