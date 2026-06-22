@@ -1,27 +1,30 @@
 # Soft Shadow Lighting
 
-A top-down 2D canvas renderer where the character is the moving light source. White square blockers cast layered soft shadow wedges, while a static center-map chromatic field creates the circular red/green/blue ambient look.
+A top-down 2D canvas renderer where the round character is the only light source. Square boxes collide with the character, can be pushed around, and cast soft shadows that darken the floor and other boxes behind them.
 
-This is intentionally not a collision or rigid-body project. The core is light geometry, shadow projection, and visual rendering.
+This project uses custom geometry and lightweight collision code. It does not use a rigid-body engine.
 
 ## Features
 
-- Character-driven light source
-- Static center chromatic field using angle-based hue mapping
+- Character-only light source
+- No colored background light
+- Round character body
+- Circle-vs-box character collision
+- Pushable square boxes
+- Box-vs-box separation
 - Rectangle occluders
 - Umbra shadow body projected away from the character
 - Layered penumbra fans for soft shadow edges
-- Glowing white blockers
-- Simple top-down character rendering
+- Shadow occlusion checks so covered boxes do not keep casting impossible shadows
+- Shadows render over world geometry so they can darken boxes behind other boxes
 - Debug rays and shadow projection lines
-- No build-time runtime dependency beyond a static file server
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | WASD / Arrow keys | Move character light |
-| Hold mouse | Pull character light toward pointer |
+| Hold mouse | Move character toward pointer |
 | D | Toggle debug rays |
 | R | Reset layout |
 | [ / ] | Decrease / increase shadow softness |
@@ -53,14 +56,13 @@ src/
     Input.js            keyboard and pointer state
   math/
     Vec2.js             vector math and clamping helpers
-    color.js            HSV/RGB utilities
+    color.js            RGB/RGBA utilities
   render/
-    CenterColorField.js angle-based radial color field
     SceneRenderer.js    main canvas draw pipeline
-    SoftShadowRenderer.js projected umbra + penumbra geometry
+    SoftShadowRenderer.js projected umra + penumbra geometry and occlusion checks
   world/
-    Occluder.js         rectangle blocker geometry
-    Scene.js            character, lights, blocker layout, controls
+    Occluder.js         pushable rectangle blocker state
+    Scene.js            character, boxes, collision, controls
 ```
 
 ## Shadow model
@@ -75,4 +77,6 @@ A ---- B
 A'--- B'
 ```
 
-Softness is faked by drawing layered triangular penumbra fans on both sides of the projected shadow. Alpha falls off per layer, which creates the transparent wedge effect without requiring a blur pass.
+Softness is faked by drawing layered triangular penumbra fans on both sides of the projected shadow. Alpha falls off per layer.
+
+The renderer also samples visibility from the character light to each box. If another box blocks those samples, the covered box is treated as unlit and does not cast a fake extra shadow. Shadows are drawn after the boxes, so the dark region can cover boxes and other scene elements like a real shadow mask.
