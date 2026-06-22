@@ -3,8 +3,17 @@ import { rgba } from '../math/color.js';
 
 const TAU = Math.PI * 2;
 const EPSILON = 1e-7;
-const CORNER_EPSILON = 0.0008;
-const BASE_RAY_COUNT = 160;
+const CORNER_EPSILON = 0.0009;
+const BASE_RAY_COUNT = 112;
+const CACHE_PRECISION = 4;
+
+function quantize(value) {
+  return Math.round(value * CACHE_PRECISION) / CACHE_PRECISION;
+}
+
+function normalizeAngle(angle) {
+  return ((angle % TAU) + TAU) % TAU;
+}
 
 function addSegment(segments, a, b, owner = null) {
   segments.push({ a, b, owner });
@@ -34,6 +43,22 @@ function createSegments(scene) {
   return segments;
 }
 
+function createSceneKey(scene) {
+  const parts = [
+    scene.width,
+    scene.height,
+    quantize(scene.character.position.x),
+    quantize(scene.character.position.y),
+    quantize(scene.characterLight.radius)
+  ];
+
+  for (const box of scene.occluders) {
+    parts.push(quantize(box.position.x), quantize(box.position.y));
+  }
+
+  return parts.join('|');
+}
+
 function cross(ax, ay, bx, by) {
   return ax * by - ay * bx;
 }
@@ -41,23 +66,23 @@ function cross(ax, ay, bx, by) {
 function raySegmentDistance(origin, angle, segment, maxDistance) {
   const rayX = Math.cos(angle);
   const rayY = Math.sin(angle);
-  const segX = segment.b.x - segment.a.x;
-  const segY = segment.b.y - segment.a.y;
-  const denominator = cross(rayX, rayY, segX, segY);
+  const segmentX = segment.b.x - segment.a.x;
+  const segmentY = segment.b.y - segment.a.y;
+  const denominator = cross(rayX, rayY, segmentX, segmentY);
 
   if (Math.abs(denominator) <= EPSILON) return null;
 
-  const originToSegmentX = segment.a.x - origin.x;
-  const originToSegmentY = segment.a.y - origin.y;
-  const rayDistance = cross(originToSegmentX, originToSegmentY, segX, segY) / denominator;
-  const segmentRatio = cross(originToSegmentX, originToSegmentY, rayX, rayY) / denominator;
+  const dx = segment.a.x - origin.x;
+  const dy = segment.a.y - origin.y;
+  const rayDistance = cross(dx, dy, segmentX, segmentY) / denominator;
+  const segmentRatio = cross(dx, dy, rayX, rayY) / denominator;
 
   if (rayDistance < 0 || rayDistance > maxDistance || segmentRatio < 0 || segmentRatio > 1) return null;
 
   return rayDistance;
 }
 
-function castRay(origin, angle, segments, maxDistance) {
+function castRay(origin, angle, segments, maxDistance, guide = false) {
   let nearestDistance = maxDistance;
   let hitOwner = null;
 
@@ -73,7 +98,8 @@ function castRay(origin, angle, segments, maxDistance) {
     angle,
     point: Vec2.add(origin, Vec2.fromAngle(angle, nearestDistance)),
     distance: nearestDistance,
-    owner: hitOwner
+    owner: hitOwner,
+    guide
   };
 }
 
@@ -130,6 +156,8 @@ export class SoftShadowRenderer {
     this.lightContext = this.lightCanvas.getContext('2d', { alpha: true });
     this.visibilityPolygon = [];
     this.rays = [];
+    this.guideRays = [];
+    this.lastSceneKey = '';
   }
 
   drawLight(context, scene) {
@@ -137,6 +165,7 @@ export class SoftShadowRenderer {
     if (polygon.length < 3) return;
 
     this.ensureLightCanvas(scene.width, scene.height);
+
     const lightContext = this.lightContext;
     lightContext.setTransform(1, 0, 0, 1, 0, 0);
     lightContext.clearRect(0, 0, scene.width, scene.height);
@@ -145,8 +174,8 @@ export class SoftShadowRenderer {
     const radius = scene.characterLight.radius;
     const gradient = lightContext.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
     gradient.addColorStop(0, rgba(255, 246, 218, 0.90 * scene.characterLight.intensity));
-    gradient.addColorStop(0.22, rgba(255, 244, 220, 0.42 * scene.characterLight.intensity));
-    gradient.addColorStop(0.64, rgba(255, 244, 220, 0.10 * scene.characterLight.intensity));
+    gradient.addColorStop(0.24, rgba(255, 244, 220, 0.40 * scene.characterLight.intensity));
+    gradient.addColorStop(0.66, rgba(255, 244, 220, 0.10 * scene.characterLight.intensity));
     gradient.addColorStop(1, rgba(255, 255, 255, 0));
 
     lightContext.save();
@@ -158,25 +187,20 @@ export class SoftShadowRenderer {
 
     context.save();
     context.globalCompositeOperation = 'lighter';
-    context.filter = 'blur(3px)';
-    context.drawImage(this.lightCanvas, 0, 0, scene.width, scene.height);
-    context.filter = 'none';
     context.drawImage(this.lightCanvas, 0, 0, scene.width, scene.height);
     context.restore();
   }
 
   drawRays(context, scene) {
-    if (!scene.showRays || this.rays.length === 0) return;
+    if (!scene.showRays || this.guideRays.length === 0) return;
 
     const light = scene.character.position;
     context.save();
     context.globalCompositeOperation = 'source-over';
-    context.strokeStyle = 'rgba(255, 235, 170, 0.32)';
+    context.strokeStyle = 'rgba(255, 235, 170, 0.28)';
     context.lineWidth = 1;
 
-    const stride = Math.max(1, Math.floor(this.rays.length / 80));
-    for (let i = 0; i < this.rays.length; i += stride) {
-      const ray = this.rays[i];
+    for (const ray of this.guideRays) {
       context.beginPath();
       context.moveTo(light.x, light.y);
       context.lineTo(ray.point.x, ray.point.y);
@@ -204,27 +228,38 @@ export class SoftShadowRenderer {
   }
 
   buildVisibilityPolygon(scene) {
+    const sceneKey = createSceneKey(scene);
+    if (sceneKey === this.lastSceneKey) {
+      return this.visibilityPolygon;
+    }
+
+    this.lastSceneKey = sceneKey;
+
     const light = scene.character.position;
     const radius = scene.characterLight.radius;
     const segments = createSegments(scene);
-    const angles = [];
+    const angleMap = new Map();
 
     for (let i = 0; i < BASE_RAY_COUNT; i += 1) {
-      angles.push((i / BASE_RAY_COUNT) * TAU);
+      const angle = normalizeAngle((i / BASE_RAY_COUNT) * TAU);
+      angleMap.set(angle.toFixed(7), { angle, guide: true });
     }
 
     for (const segment of segments) {
-      const points = [segment.a, segment.b];
-      for (const point of points) {
-        const angle = Math.atan2(point.y - light.y, point.x - light.x);
-        angles.push(angle - CORNER_EPSILON, angle, angle + CORNER_EPSILON);
+      for (const point of [segment.a, segment.b]) {
+        const baseAngle = Math.atan2(point.y - light.y, point.x - light.x);
+        for (const offset of [-CORNER_EPSILON, 0, CORNER_EPSILON]) {
+          const angle = normalizeAngle(baseAngle + offset);
+          angleMap.set(angle.toFixed(7), { angle, guide: false });
+        }
       }
     }
 
-    const rays = angles.map((angle) => castRay(light, angle, segments, radius));
-    rays.sort((a, b) => a.angle - b.angle);
+    const angleEntries = Array.from(angleMap.values()).sort((a, b) => a.angle - b.angle);
+    const rays = angleEntries.map((entry) => castRay(light, entry.angle, segments, radius, entry.guide));
 
     this.rays = rays;
+    this.guideRays = rays.filter((ray) => ray.guide);
     this.visibilityPolygon = rays.map((ray) => ray.point);
     return this.visibilityPolygon;
   }
@@ -249,5 +284,6 @@ export class SoftShadowRenderer {
 
     this.lightCanvas.width = width;
     this.lightCanvas.height = height;
+    this.lastSceneKey = '';
   }
 }
