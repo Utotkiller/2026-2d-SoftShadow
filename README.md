@@ -1,72 +1,84 @@
 # Soft Shadow Lighting
 
-A top-down 2D canvas renderer where the round character is the only light source. Square boxes collide with the character, can be pushed when box pushing is enabled, and block light using ray visibility.
+This is a small 2D lighting demo where the player is the only light source.
 
-This project uses custom geometry and lightweight collision code. It does not use a rigid-body engine.
+Move the round character around the map and the boxes will block the light. The shadows are not drawn as random dark triangles anymore. The renderer casts rays from the character, finds what those rays hit first, and builds a visible light shape from that. Anything behind a box stays dark.
 
-## Features
+The boxes can also be pushed. Press `B` to turn box pushing on or off.
 
-- Character-only light source
-- No colored background light
-- No shadow softness control
-- No light radius control
-- Round character body
-- Circle-vs-box character collision
-- Toggleable box pushing
-- Box-vs-box separation while pushing is enabled
-- Rectangle occluders
-- Raycast visibility polygon instead of stacked shadow triangles
-- No accumulating shadow overlap from repeated triangle wedges
-- Optional light-ray visualization on `F`
-- Square black HUD using `rgb(0, 0, 0)`
+## What it does
+
+- The character is the only light.
+- The background stays black.
+- Boxes block the light.
+- The character is round and collides with boxes.
+- Boxes can be pushed when box pushing is enabled.
+- Light rays can be shown with `F`.
+- The UI is plain black with square corners.
+- The old overlapping triangle-shadow look has been replaced with a raycast visibility polygon.
 
 ## Controls
 
-| Input | Action |
+| Key | Action |
 | --- | --- |
-| WASD / Arrow keys | Move character light |
-| Hold mouse | Move character toward pointer |
+| WASD / Arrow keys | Move the character |
+| Hold mouse | Move toward the mouse pointer |
 | F | Toggle light rays |
 | B | Toggle box pushing |
-| R | Reset layout |
+| R | Reset the scene |
 
-## Run
+## Running it
 
-Use any static file server.
+Install the packages once:
 
 ```bash
 npm install
+```
+
+Start the local server:
+
+```bash
 npm run dev
 ```
 
-Or, without installing packages:
+Open the local URL that Vite prints, usually:
+
+```txt
+http://localhost:5173
+```
+
+You can also run it without npm scripts by serving the folder directly:
 
 ```bash
 python -m http.server 5173
 ```
 
-Then open `http://localhost:5173`.
+## How the lighting works
 
-## Architecture
+The light starts at the character position. Each frame, the renderer builds a list of wall and box edges, then casts rays outward. Each ray stops at the closest edge it hits.
+
+Those hit points are sorted by angle and connected into one visibility polygon. The character light is drawn only inside that polygon, so boxes naturally cut holes out of the light.
+
+This avoids stacking separate shadow triangles on top of each other. It is simpler, cleaner, and closer to how real line-of-sight lighting behaves in a top-down 2D scene.
+
+## Project layout
 
 ```txt
 src/
   core/
-    App.js              requestAnimationFrame loop, resize, update/render order
-    Input.js            keyboard and pointer state
+    App.js
+    Input.js
   math/
-    Vec2.js             vector math and clamping helpers
-    color.js            RGB/RGBA utilities
+    Vec2.js
+    color.js
   render/
-    SceneRenderer.js    main canvas draw pipeline
-    SoftShadowRenderer.js raycast visibility polygon and light rays
+    SceneRenderer.js
+    SoftShadowRenderer.js
   world/
-    Occluder.js         pushable rectangle blocker state
-    Scene.js            character, boxes, collision, controls
+    Occluder.js
+    Scene.js
 ```
 
-## Shadow model
+## Notes
 
-The renderer casts rays from the character light to box corners, screen bounds, and evenly sampled radial angles. Every ray stops at the nearest blocking segment. The sorted hit points form a visibility polygon.
-
-The character light is drawn only inside that visibility polygon. This means boxes physically block light, and the renderer does not stack independent shadow triangles on top of each other.
+This is not using a physics engine. The character and boxes use simple custom collision code because the project is focused on lighting, shadows, and readable geometry.
