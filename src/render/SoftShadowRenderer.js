@@ -1,9 +1,11 @@
 import { Vec2, clamp, normalizeAngle } from '../math/Vec2.js';
 
 const TAU = Math.PI * 2;
+const EPSILON = 1e-7;
 
 function polygon(context, points) {
   if (points.length < 3) return;
+
   context.beginPath();
   context.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i += 1) {
@@ -17,9 +19,7 @@ function projectPoint(point, lightPosition, distance) {
   const direction = Vec2.subtract(point, lightPosition);
   const length = direction.length();
 
-  if (length <= 1e-7) {
-    return point.clone();
-  }
+  if (length <= EPSILON) return point.clone();
 
   direction.multiplyScalar(1 / length);
   return Vec2.add(point, Vec2.multiplyScalar(direction, distance));
@@ -50,52 +50,113 @@ function getAngularSpan(points, lightPosition) {
 
   const startIndex = (gapIndex + 1) % entries.length;
   const endIndex = gapIndex;
-  const start = entries[startIndex];
-  const end = entries[endIndex];
   const span = TAU - largestGap;
 
-  if (span <= 0 || span > Math.PI * 1.3) {
-    return null;
+  if (span <= 0 || span > Math.PI * 1.3) return null;
+
+  return {
+    start: entries[startIndex],
+    end: entries[endIndex],
+    span
+  };
+}
+
+function rayBoxDistance(origin, target, box) {
+  const toTarget = Vec2.subtract(target, origin);
+  const maxDistance = toTarget.length();
+  if (maxDistance <= EPSILON) return null;
+
+  const dirX = toTarget.x / maxDistance;
+  const dirY = toTarget.y / maxDistance;
+  let tMin = 0;
+  let tMax = maxDistance;
+
+  if (Math.abs(dirX) < EPSILON) {
+    if (origin.x < box.left || origin.x > box.right) return null;
+  } else {
+    let tx1 = (box.left - origin.x) / dirX;
+    let tx2 = (box.right - origin.x) / dirX;
+    if (tx1 > tx2) [tx1, tx2] = [tx2, tx1];
+    tMin = Math.max(tMin, tx1);
+    tMax = Math.min(tMax, tx2);
+    if (tMin > tMax) return null;
   }
 
-  return { start, end, span };
+  if (Math.abs(dirY) < EPSILON) {
+    if (origin.y < box.top || origin.y > box.bottom) return null;
+  } else {
+    let ty1 = (box.top - origin.y) / dirY;
+    let ty2 = (box.bottom - origin.y) / dirY;
+    if (ty1 > ty2) [ty1, ty2] = [ty2, ty1];
+    tMin = Math.max(tMin, ty1);
+    tMax = Math.min(tMax, ty2);
+    if (tMin > tMax) return null;
+  }
+
+  if (tMax < 0) return null;
+  return Math.max(0, tMin);
+}
+
+function sampleVisibleFromLight(sample, caster, occluders, lightPosition) {
+  const sampleDistance = Vec2.distance(lightPosition, sample);
+
+  for (const other of occluders) {
+    if (other === caster) continue;
+
+    const hitDistance = rayBoxDistance(lightPosition, sample, other);
+    if (hitDistance !== null && hitDistance < sampleDistance - 0.75) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function casterReceivesLight(caster, occluders, lightPosition, lightRadius) {
+  const centerDistance = Vec2.distance(lightPosition, caster.position);
+  if (centerDistance > lightRadius + caster.size * 1.5) return false;
+
+  const samples = [caster.position, ...caster.corners()];
+  return samples.some((sample) => sampleVisibleFromLight(sample, caster, occluders, lightPosition));
 }
 
 export class SoftShadowRenderer {
   constructor() {
-    this.penumbraLayers = 10;
-    this.umbraAlpha = 0.38;
-    this.penumbraAlpha = 0.11;
+    this.penumbraLayers = 12;
+    this.umbraAlpha = 0.56;
+    this.penumbraAlpha = 0.18;
   }
 
   draw(context, scene) {
     const lightPosition = scene.character.position;
-    const maxSceneSize = Math.hypot(scene.width, scene.height);
-    const shadowDistance = maxSceneSize * 1.45;
+    const shadowDistance = Math.hypot(scene.width, scene.height) * 1.45;
 
     context.save();
     context.globalCompositeOperation = 'source-over';
 
-    for (const occluder of scene.occluders) {
-      if (occluder.contains(lightPosition)) continue;
+    for (const caster of scene.occluders) {
+      if (caster.contains(lightPosition)) continue;
+      if (!casterReceivesLight(caster, scene.occluders, lightPosition, scene.characterLight.radius)) continue;
 
-      const corners = occluder.corners();
+      const corners = caster.corners();
       const span = getAngularSpan(corners, lightPosition);
       if (!span) continue;
+
+      const distance = Vec2.distance(lightPosition, caster.position);
+      const lightFade = clamp(1 - distance / scene.characterLight.radius, 0, 1);
+      if (lightFade <= 0.02) continue;
 
       const startPoint = span.start.point;
       const endPoint = span.end.point;
       const startFar = projectPoint(startPoint, lightPosition, shadowDistance);
       const endFar = projectPoint(endPoint, lightPosition, shadowDistance);
-      const blockerDistance = Vec2.distance(lightPosition, occluder.position);
-      const distanceFade = clamp(1 - blockerDistance / (scene.characterLight.radius * 1.25), 0.2, 1);
 
-      context.fillStyle = `rgba(0, 0, 0, ${this.umbraAlpha * distanceFade})`;
+      context.fillStyle = `rgba(0, 0, 0, ${this.umbraAlpha * lightFade})`;
       polygon(context, [startPoint, endPoint, endFar, startFar]);
 
-      const spread = this.computeSpread(scene, blockerDistance, span.span);
-      this.drawPenumbra(context, lightPosition, startPoint, span.start.angle, -1, shadowDistance, spread, distanceFade);
-      this.drawPenumbra(context, lightPosition, endPoint, span.end.angle, 1, shadowDistance, spread, distanceFade);
+      const spread = this.computeSpread(scene, distance, span.span);
+      this.drawPenumbra(context, lightPosition, startPoint, span.start.angle, -1, shadowDistance, spread, lightFade);
+      this.drawPenumbra(context, lightPosition, endPoint, span.end.angle, 1, shadowDistance, spread, lightFade);
 
       if (scene.debug) {
         this.drawDebug(context, lightPosition, startPoint, endPoint, startFar, endFar);
@@ -105,13 +166,13 @@ export class SoftShadowRenderer {
     context.restore();
   }
 
-  computeSpread(scene, blockerDistance, angularSpan) {
-    const base = scene.character.radius / Math.max(blockerDistance, 1);
-    const sizeTerm = angularSpan * 0.28;
-    return clamp((base + sizeTerm) * scene.shadowSoftness, 0.035, 0.42);
+  computeSpread(scene, casterDistance, angularSpan) {
+    const radiusTerm = scene.character.radius / Math.max(casterDistance, 1);
+    const edgeTerm = angularSpan * 0.24;
+    return clamp((radiusTerm + edgeTerm) * scene.shadowSoftness, 0.03, 0.38);
   }
 
-  drawPenumbra(context, lightPosition, originPoint, baseAngle, sign, shadowDistance, spread, distanceFade) {
+  drawPenumbra(context, lightPosition, originPoint, baseAngle, sign, shadowDistance, spread, lightFade) {
     const originDistance = Vec2.distance(lightPosition, originPoint);
     const farDistance = originDistance + shadowDistance;
 
@@ -122,9 +183,9 @@ export class SoftShadowRenderer {
       const angle1 = baseAngle + sign * spread * t1;
       const far0 = Vec2.add(lightPosition, Vec2.fromAngle(angle0, farDistance));
       const far1 = Vec2.add(lightPosition, Vec2.fromAngle(angle1, farDistance));
-      const falloff = Math.pow(1 - t0, 1.75);
+      const falloff = Math.pow(1 - t0, 1.85);
 
-      context.fillStyle = `rgba(0, 0, 0, ${this.penumbraAlpha * falloff * distanceFade})`;
+      context.fillStyle = `rgba(0, 0, 0, ${this.penumbraAlpha * falloff * lightFade})`;
       polygon(context, [originPoint, far0, far1]);
     }
   }
