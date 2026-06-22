@@ -1,6 +1,6 @@
 # Soft Shadow Lighting
 
-A top-down 2D canvas renderer where the round character is the only light source. Square boxes collide with the character, can be pushed around, and cast soft shadows that darken the floor and other boxes behind them.
+A top-down 2D canvas renderer where the round character is the only light source. Square boxes collide with the character, can be pushed when box pushing is enabled, and block light using ray visibility.
 
 This project uses custom geometry and lightweight collision code. It does not use a rigid-body engine.
 
@@ -8,16 +8,17 @@ This project uses custom geometry and lightweight collision code. It does not us
 
 - Character-only light source
 - No colored background light
+- No shadow softness control
+- No light radius control
 - Round character body
 - Circle-vs-box character collision
-- Pushable square boxes
-- Box-vs-box separation
+- Toggleable box pushing
+- Box-vs-box separation while pushing is enabled
 - Rectangle occluders
-- Umbra shadow body projected away from the character
-- Layered penumbra fans for soft shadow edges
-- Shadow occlusion checks so covered boxes do not keep casting impossible shadows
-- Shadows render over world geometry so they can darken boxes behind other boxes
-- Debug rays and shadow projection lines
+- Raycast visibility polygon instead of stacked shadow triangles
+- No accumulating shadow overlap from repeated triangle wedges
+- Optional light-ray visualization on `F`
+- Square black HUD using `rgb(0, 0, 0)`
 
 ## Controls
 
@@ -25,10 +26,9 @@ This project uses custom geometry and lightweight collision code. It does not us
 | --- | --- |
 | WASD / Arrow keys | Move character light |
 | Hold mouse | Move character toward pointer |
-| D | Toggle debug rays |
+| F | Toggle light rays |
+| B | Toggle box pushing |
 | R | Reset layout |
-| [ / ] | Decrease / increase shadow softness |
-| - / = | Decrease / increase character light radius |
 
 ## Run
 
@@ -59,7 +59,7 @@ src/
     color.js            RGB/RGBA utilities
   render/
     SceneRenderer.js    main canvas draw pipeline
-    SoftShadowRenderer.js projected umbra + penumbra geometry and occlusion checks
+    SoftShadowRenderer.js raycast visibility polygon and light rays
   world/
     Occluder.js         pushable rectangle blocker state
     Scene.js            character, boxes, collision, controls
@@ -67,16 +67,6 @@ src/
 
 ## Shadow model
 
-Each rectangle is treated as an occluder. The renderer finds the rectangle's angular silhouette from the character light, then projects the two silhouette endpoints away from the light.
+The renderer casts rays from the character light to box corners, screen bounds, and evenly sampled radial angles. Every ray stops at the nearest blocking segment. The sorted hit points form a visibility polygon.
 
-The hard center shadow is a projected quad:
-
-```txt
-A ---- B
-|      |
-A'--- B'
-```
-
-Softness is faked by drawing layered triangular penumbra fans on both sides of the projected shadow. Alpha falls off per layer.
-
-The renderer also samples visibility from the character light to each box. If another box blocks those samples, the covered box is treated as unlit and does not cast a fake extra shadow. Shadows are drawn after the boxes, so the dark region can cover boxes and other scene elements like a real shadow mask.
+The character light is drawn only inside that visibility polygon. This means boxes physically block light, and the renderer does not stack independent shadow triangles on top of each other.
