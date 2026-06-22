@@ -1,0 +1,24 @@
+{
+  "name": "soft-shadow-lighting",
+  "version": "1.0.0",
+  "description": "Top-down 2D character-driven soft shadows with a central chromatic light field.",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "node --check src/main.js && find src -name '*.js' -not -path 'src/main.js' -print0 | xargs -0 -n1 node --check"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  },
+  "keywords": [
+    "2d",
+    "canvas",
+    "lighting",
+    "soft-shadows",
+    "penumbra",
+    "geometry"
+  ],
+  "license": "MIT"
+}
