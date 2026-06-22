@@ -56,9 +56,9 @@ export class Scene {
       angle: -Math.PI * 0.5,
       speed: 285
     };
-    this.characterLight = { radius: 420, intensity: 1 };
-    this.shadowSoftness = 1.0;
-    this.debug = false;
+    this.characterLight = { radius: 530, intensity: 1 };
+    this.showRays = false;
+    this.boxPhysicsEnabled = true;
     this.occluders = [];
     this.reset(width, height);
   }
@@ -86,15 +86,19 @@ export class Scene {
 
   update(deltaSeconds, input) {
     if (input.wasPressed('r')) this.reset(this.width, this.height);
-    if (input.wasPressed('d')) this.debug = !this.debug;
-    if (input.wasPressed('[')) this.shadowSoftness = clamp(this.shadowSoftness - 0.1, 0.2, 2.2);
-    if (input.wasPressed(']')) this.shadowSoftness = clamp(this.shadowSoftness + 0.1, 0.2, 2.2);
-    if (input.wasPressed('-')) this.characterLight.radius = clamp(this.characterLight.radius - 30, 180, 780);
-    if (input.wasPressed('=')) this.characterLight.radius = clamp(this.characterLight.radius + 30, 180, 780);
+    if (input.wasPressed('f')) this.showRays = !this.showRays;
+    if (input.wasPressed('b')) {
+      this.boxPhysicsEnabled = !this.boxPhysicsEnabled;
+      if (!this.boxPhysicsEnabled) this.stopBoxes();
+    }
 
-    for (const box of this.occluders) {
-      box.integrate(deltaSeconds);
-      box.clampToBounds(this.width, this.height);
+    if (this.boxPhysicsEnabled) {
+      for (const box of this.occluders) {
+        box.integrate(deltaSeconds);
+        box.clampToBounds(this.width, this.height);
+      }
+    } else {
+      this.stopBoxes();
     }
 
     const movement = this.readMovement(deltaSeconds, input);
@@ -144,7 +148,7 @@ export class Scene {
 
     for (let pass = 0; pass < 6; pass += 1) {
       this.solveCharacterBoxes(movement, speed);
-      this.solveBoxes();
+      if (this.boxPhysicsEnabled) this.solveBoxes();
       this.clampWorldBounds();
     }
   }
@@ -155,14 +159,14 @@ export class Scene {
       if (!hit) continue;
 
       const intoBox = Math.max(0, -(movement.x * hit.normal.x + movement.y * hit.normal.y));
-      const boxShare = intoBox > 0 ? 0.82 : 0.5;
+      const boxShare = this.boxPhysicsEnabled && intoBox > 0 ? 0.82 : 0;
       const characterShare = 1 - boxShare;
       const depth = hit.depth + 0.05;
 
       this.character.position.add(Vec2.multiplyScalar(hit.normal, depth * characterShare));
       box.position.add(Vec2.multiplyScalar(hit.normal, -depth * boxShare));
 
-      if (intoBox > 0) {
+      if (this.boxPhysicsEnabled && intoBox > 0) {
         box.velocity.add(Vec2.multiplyScalar(hit.normal, -speed * 0.34));
       }
     }
@@ -199,6 +203,12 @@ export class Scene {
 
     for (const box of this.occluders) {
       box.clampToBounds(this.width, this.height);
+    }
+  }
+
+  stopBoxes() {
+    for (const box of this.occluders) {
+      box.velocity.set(0, 0);
     }
   }
 }
